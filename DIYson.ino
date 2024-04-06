@@ -9,19 +9,45 @@
  */
 #include "Adafruit_FreeTouch.h"
 
+////////////////////////////////////////////////////////////////////////////////
+// Pins
+////////////////////////////////////////////////////////////////////////////////
 #define LED_BUILDIN 13
 #define PIN_DAC A0
-
-#define TOUCH_PRESSED_THRESHOLD 800u
-#define TOUCH_PRESSED_HYSTERESIS 100u
-#define TOUCH_PRESSED_THRESHOLD_HIGH (TOUCH_PRESSED_THRESHOLD + (TOUCH_PRESSED_HYSTERESIS / 2u))
-#define TOUCH_PRESSED_THRESHOLD_LOW (TOUCH_PRESSED_THRESHOLD - (TOUCH_PRESSED_HYSTERESIS / 2u))
 
 #define PIN_TOGGLE A8
 #define PIN_INC A9
 #define PIN_DEC A10
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Touch filtering configuration
+////////////////////////////////////////////////////////////////////////////////
+#define TOUCH_PRESSED_THRESHOLD 700u
+#define TOUCH_PRESSED_HYSTERESIS 50u
+#define TOUCH_PRESSED_THRESHOLD_HIGH (TOUCH_PRESSED_THRESHOLD + (TOUCH_PRESSED_HYSTERESIS / 2u))
+#define TOUCH_PRESSED_THRESHOLD_LOW (TOUCH_PRESSED_THRESHOLD - (TOUCH_PRESSED_HYSTERESIS / 2u))
+
+#define FILTER_EMA_ALFA 0.1f  // When this is 1, there is no filtering
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Debug
+////////////////////////////////////////////////////////////////////////////////
+// Used indicator LED to show when DAC is not 0
+// #define DEBUG_INDICATOR_LED
+
+// Comment out to stop debug message printing
+// Enable only one debug message at a time
+// #define DEBUG_TOUCH_VALUES
+// #define DEBUG_PIN_STATES
+////////////////////////////////////////////////////////////////////////////////
 
 #define DAC_VAL_MAX 255u
+
+// LED is active low
+#define DEBUG_LED_ST_ON 0
+#define DEBUG_LED_ST_OFF 1
 
 typedef enum {
     BRIGHTNESS_OFF = 0u,
@@ -32,18 +58,28 @@ typedef enum {
     BRIGHTNESS_COUNT = 5u,
 } BRIGHTNESS_E;
 
-// Comment out to stop debug message printing
-// #define DEBUG_TOUCH_PINS
-
-Adafruit_FreeTouch touch_toggle
-        = Adafruit_FreeTouch(PIN_TOGGLE, OVERSAMPLE_32, RESISTOR_50K, FREQ_MODE_SPREAD);
+Adafruit_FreeTouch touch_power
+        = Adafruit_FreeTouch(PIN_TOGGLE, OVERSAMPLE_2, RESISTOR_50K, FREQ_MODE_SPREAD);
 Adafruit_FreeTouch touch_inc
-        = Adafruit_FreeTouch(PIN_INC, OVERSAMPLE_32, RESISTOR_50K, FREQ_MODE_SPREAD);
+        = Adafruit_FreeTouch(PIN_INC, OVERSAMPLE_2, RESISTOR_50K, FREQ_MODE_SPREAD);
 Adafruit_FreeTouch touch_dec
-        = Adafruit_FreeTouch(PIN_DEC, OVERSAMPLE_32, RESISTOR_50K, FREQ_MODE_SPREAD);
+        = Adafruit_FreeTouch(PIN_DEC, OVERSAMPLE_2, RESISTOR_50K, FREQ_MODE_SPREAD);
+
+// Filtered touch values (0-1023)
+uint16_t touch_value_power = 0;
+uint16_t touch_value_inc = 0;
+uint16_t touch_value_dec = 0;
+
+// Touch pin states (on/off)
+bool pinState_power = false;
+bool pinState_inc = false;
+bool pinState_dec = false;
+bool pinState_power_previous = false;
+bool pinState_inc_previous = false;
+bool pinState_dec_previous = false;
 
 bool ledOn = false;
-uint8_t brightness = BRIGHTNESS_1;
+uint8_t brightness = BRIGHTNESS_1;  // Set to default power on brightness
 
 // The setup routine runs once when you press reset:
 void setup() {
@@ -57,8 +93,8 @@ void setup() {
     analogWrite(PIN_DAC, 0);
 
     // Initialize Touch sensors
-    if(!touch_toggle.begin()) {
-        Serial.println("Failed to init touch_toggle");
+    if(!touch_power.begin()) {
+        Serial.println("Failed to init touch_power");
     }
     if(!touch_inc.begin()) {
         Serial.println("Failed to init touch_inc");
@@ -69,42 +105,24 @@ void setup() {
 }
 
 // The loop routine runs over and over again forever:
-bool isPressedState_previous_toggle;
-bool isPressedState_previous_inc;
-bool isPressedState_previous_dec;
 void loop() {
-    uint16_t touch_value_toggle = 0;
-    uint16_t touch_value_inc = 0;
-    uint16_t touch_value_dec = 0;
+    updateTouchValues();
+    updatePinStates();
 
-    bool isPressed_toggle = 0;
-    bool isPressed_inc = 0;
-    bool isPressed_dec = 0;
-    bool isPressed_togglePrev = 0;
-    bool isPressed_incPrev = 0;
-    bool isPressed_decPrev = 0;
+    if(isRisingEdge(pinState_power, &pinState_power_previous)) {
+        ledOn = !ledOn;
+        Serial.print("LED toggle - ");
+        Serial.println(ledOn);
 
-    bool risingEdgeState;
-
-    wait_for_power_on();
-    digitalWrite(LED_BUILDIN, 0);
-    Serial.print("Brightness (ON): ");
-    Serial.println(brightness);
-    setLed((BRIGHTNESS_E)brightness);
-
-    while(ledOn == true) {
-        risingEdgeState = isRisingEdge(&touch_toggle, &isPressedState_previous_toggle);
-        if(risingEdgeState == true) {
-            ledOn = false;
-            digitalWrite(LED_BUILDIN, 1);
-            Serial.print("Brightness (OFF): ");
-            Serial.println(brightness);
+        if(ledOn == true) {
+            setLed((BRIGHTNESS_E)brightness);
+        } else {
             setLed(BRIGHTNESS_OFF);
-            break;
         }
+    }
 
-        risingEdgeState = isRisingEdge(&touch_inc, &isPressedState_previous_inc);
-        if(risingEdgeState == true) {
+    if(ledOn == true) {
+        if(isRisingEdge(pinState_inc, &pinState_inc_previous)) {
             if(brightness < BRIGHTNESS_MAX) {
                 brightness++;
                 Serial.print("Brightness (++): ");
@@ -113,8 +131,7 @@ void loop() {
             }
         }
 
-        risingEdgeState = isRisingEdge(&touch_dec, &isPressedState_previous_dec);
-        if(risingEdgeState == true) {
+        if(isRisingEdge(pinState_dec, &pinState_dec_previous)) {
             if(brightness > BRIGHTNESS_OFF) {
                 brightness--;
                 Serial.print("Brightness (--): ");
@@ -123,18 +140,51 @@ void loop() {
             }
         }
     }
+}
 
-#ifdef DEBUG_TOUCH_PINS
-    touch_value_toggle = touch_toggle.measure();
-    touch_value_inc = touch_inc.measure();
-    touch_value_dec = touch_dec.measure();
+// Calculate output value of EMA filter
+// https://www.norwegiancreations.com/2015/10/tutorial-potentiometers-with-arduino-and-filtering/
+// https://en.wikipedia.org/wiki/Exponential_smoothing
+// https://youtu.be/1e_ZB8p5n6s
+inline uint16_t filter_ema_calc(uint16_t x, uint16_t y_prev) {
+    return FILTER_EMA_ALFA * x + (1 - FILTER_EMA_ALFA) * y_prev;
+}
 
-    Serial.print(touch_value_toggle);
+void updateTouchValues() {
+    uint16_t touch_value_power_raw = 0;
+    uint16_t touch_value_inc_raw = 0;
+    uint16_t touch_value_dec_raw = 0;
+
+    static uint16_t touch_value_power_previous = 0;
+    static uint16_t touch_value_inc_previous = 0;
+    static uint16_t touch_value_dec_previous = 0;
+
+    touch_value_power_raw = touch_power.measure();
+    touch_value_inc_raw = touch_inc.measure();
+    touch_value_dec_raw = touch_dec.measure();
+
+    touch_value_power = filter_ema_calc(touch_value_power_raw, touch_value_power_previous);
+    touch_value_inc = filter_ema_calc(touch_value_inc_raw, touch_value_inc_previous);
+    touch_value_dec = filter_ema_calc(touch_value_dec_raw, touch_value_dec_previous);
+
+    // Store current y as previous value, needed for next cycle calculation
+    touch_value_power_previous = touch_value_power;
+    touch_value_inc_previous = touch_value_inc;
+    touch_value_dec_previous = touch_value_dec;
+
+#ifdef DEBUG_TOUCH_VALUES
+    Serial.print(touch_value_power_raw);
+    Serial.print(",");
+    Serial.print(touch_value_power);
     Serial.print(",");
 
+    Serial.print(touch_value_inc_raw);
+    Serial.print(",");
     Serial.print(touch_value_inc);
     Serial.print(",");
 
+    Serial.print(touch_value_dec_raw);
+    Serial.print(",");
     Serial.print(touch_value_dec);
     Serial.print("\n");
 #endif
@@ -145,24 +195,47 @@ inline bool isTouchPinPressedWithHysteresis(uint16_t measurement, bool previousS
 
     if(previousState == false) {
         if(measurement > TOUCH_PRESSED_THRESHOLD_HIGH) {
-            Serial.print("Meas: ");
-            Serial.print(measurement);
-            Serial.print(", previousState: ");
-            Serial.println(previousState);
             pinPressed = true;
         }
     } else {
         // previousState == true
         if(measurement < TOUCH_PRESSED_THRESHOLD_LOW) {
-            Serial.print("Meas: ");
-            Serial.print(measurement);
-            Serial.print(", previousState: ");
-            Serial.println(previousState);
             pinPressed = false;
         }
     }
 
     return pinPressed;
+}
+
+void updatePinStates() {
+    pinState_power = isTouchPinPressedWithHysteresis(touch_value_power, pinState_power);
+    pinState_inc = isTouchPinPressedWithHysteresis(touch_value_inc, pinState_inc);
+    pinState_dec = isTouchPinPressedWithHysteresis(touch_value_dec, pinState_dec);
+
+#ifdef DEBUG_PIN_STATES
+    Serial.print(pinState_power);
+    Serial.print(",");
+
+    Serial.print(pinState_inc);
+    Serial.print(",");
+
+    Serial.print(pinState_dec);
+    Serial.print("\n");
+#endif
+}
+
+inline bool isRisingEdge(bool pinState_current, bool *pinState_previous) {
+    bool returnState;
+
+    if(pinState_current == true && *pinState_previous == false) {
+        returnState = true;
+    } else {
+        returnState = false;
+    }
+
+    *pinState_previous = pinState_current;
+
+    return returnState;
 }
 
 void setLed(BRIGHTNESS_E brightness) {
@@ -175,30 +248,12 @@ void setLed(BRIGHTNESS_E brightness) {
     };
 
     analogWrite(PIN_DAC, dacBrightnessValues[brightness]);
-}
 
-bool isRisingEdge(Adafruit_FreeTouch *pTouchPin, bool *pPrevTouchSt) {
-    uint16_t touch_value = 0;
-    bool isPressed = false;
-    bool riseEdge = false;
-
-    touch_value = pTouchPin->measure();
-    isPressed = isTouchPinPressedWithHysteresis(touch_value, *pPrevTouchSt);
-    if(isPressed == true && *pPrevTouchSt == false) {
-        riseEdge = true;
+#ifdef DEBUG_INDICATOR_LED
+    if(brightness == BRIGHTNESS_OFF) {
+        digitalWrite(LED_BUILDIN, DEBUG_LED_ST_OFF);
+    } else {
+        digitalWrite(LED_BUILDIN, DEBUG_LED_ST_ON);
     }
-
-    *pPrevTouchSt = isPressed;
-
-    return riseEdge;
-}
-void wait_for_power_on() {
-    bool risingEdgeState;
-    // bool isPressedState_previous;
-
-    do {
-        risingEdgeState = isRisingEdge(&touch_toggle, &isPressedState_previous_toggle);
-    } while(risingEdgeState == false);
-
-    ledOn = true;
+#endif
 }
