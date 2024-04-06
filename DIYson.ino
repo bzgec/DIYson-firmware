@@ -3,21 +3,42 @@
  *   1. Add additional board json file - https://learn.adafruit.com/adafruit-qt-py/arduino-ide-setup
  *   2. Install SAMD support - https://learn.adafruit.com/adafruit-qt-py/using-with-arduino-ide
  * Add Adafruit_FreeTouch library
- *   1. Download latest Adafruit_FreeTouch library .zip -
- * https://github.com/adafruit/Adafruit_FreeTouch/releases
+ *   1. Download latest Adafruit_FreeTouch library .zip - https://github.com/adafruit/Adafruit_FreeTouch/releases
  *   2. Import library to sketch - "Sketch > Import"
  */
 #include "Adafruit_FreeTouch.h"
 
+#define SEEEDUINO_XIAO
+// #define ADAFRUIT_QT_PY_SAMD21
+
+#if((defined(SEEEDUINO_XIAO) + defined(ADAFRUIT_QT_PY_SAMD21)) >= 2)
+#error "Only one board can be defined"
+#endif
+
+#if((defined(SEEEDUINO_XIAO) + defined(ADAFRUIT_QT_PY_SAMD21)) == 0)
+#error "At least one board must be defined"
+#endif
+
 ////////////////////////////////////////////////////////////////////////////////
 // Pins
 ////////////////////////////////////////////////////////////////////////////////
-#define LED_BUILDIN 13
+#ifdef SEEEDUINO_XIAO
+#define PIN_INDICATOR_LED 13
 #define PIN_DAC A0
 
 #define PIN_TOGGLE A8
 #define PIN_INC A9
 #define PIN_DEC A10
+#endif  // SEEEDUINO_XIAO
+
+#ifdef ADAFRUIT_QT_PY_SAMD21
+#define PIN_INDICATOR_LED 13
+#define PIN_DAC A0
+
+#define PIN_TOGGLE A8
+#define PIN_INC A9
+#define PIN_DEC A10
+#endif  // ADAFRUIT_QT_PY_SAMD21
 ////////////////////////////////////////////////////////////////////////////////
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -35,12 +56,16 @@
 // Debug
 ////////////////////////////////////////////////////////////////////////////////
 // Used indicator LED to show when DAC is not 0
-// #define DEBUG_INDICATOR_LED
+//#define DEBUG_INDICATOR_LED
 
 // Comment out to stop debug message printing
 // Enable only one debug message at a time
 // #define DEBUG_TOUCH_VALUES
 // #define DEBUG_PIN_STATES
+
+#if((defined(DEBUG_TOUCH_VALUES) + defined(DEBUG_PIN_STATES)) >= 2)
+#error "Only one debug value spamming can be active at the same time"
+#endif
 ////////////////////////////////////////////////////////////////////////////////
 
 #define DAC_VAL_MAX 255u
@@ -87,7 +112,7 @@ void setup() {
     Serial.begin(115200);
     Serial.println("DIYson LED controller");
 
-    pinMode(LED_BUILDIN, OUTPUT);
+    pinMode(PIN_INDICATOR_LED, OUTPUT);
 
     // Turn off the LED
     analogWrite(PIN_DAC, 0);
@@ -251,9 +276,9 @@ void setLed(BRIGHTNESS_E brightness) {
 
 #ifdef DEBUG_INDICATOR_LED
     if(brightness == BRIGHTNESS_OFF) {
-        digitalWrite(LED_BUILDIN, DEBUG_LED_ST_OFF);
+        digitalWrite(PIN_INDICATOR_LED, DEBUG_LED_ST_OFF);
     } else {
-        digitalWrite(LED_BUILDIN, DEBUG_LED_ST_ON);
+        digitalWrite(PIN_INDICATOR_LED, DEBUG_LED_ST_ON);
     }
 #endif
 }
